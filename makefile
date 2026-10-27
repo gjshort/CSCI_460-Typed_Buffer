@@ -11,7 +11,7 @@ all: program
 program: main.o
 	$(CC) $(CFLAGS) $^ -o $(TARGET)
 
-main.o: src/main.c
+main.o: src/main.c src/CDLL.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:

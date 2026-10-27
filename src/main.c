@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <stdbool.h>
+#include "CDLL.h"           // Circular, Doubly Linked List (written years ago)
 
 #define RED     "\033[0;31m" // Main thread
 #define GREEN   "\033[0;32m" // Odd Producer
@@ -21,7 +23,12 @@
 
 int begin_threads = 0; // Global thread launch
 
-//unsigned int buffer[50];
+// Circular Doubly Linked List pointers
+struct Node *buffer_head = NULL;
+struct Node *buffer_tail = NULL;
+
+unsigned int BUFFER_SIZE = 50;
+unsigned int items_in_buffer = 0;
 unsigned int odds_in_buffer = 0;
 unsigned int evens_in_buffer = 0;
 
@@ -43,14 +50,18 @@ void produce_odd()
     int produced = 0;
     while (produced < 100)
     {
-        sem_wait(&odd_sem);
-        pthread_mutex_lock(&buffer_lock);
+        sem_wait(&odd_sem);                     // Allows even producer/consumer to work independently
+        pthread_mutex_lock(&buffer_lock);       // Mutex to control buffer pointers
 
-        // If buffer not full 
-            // write to buffer
+        // If there's buffer space, add to the end of it
+        if (items_in_buffer < BUFFER_SIZE)
+        {
+            addToEnd(produced*2 + 1, &buffer_head, &buffer_tail);
             odds_in_buffer++;
+            items_in_buffer++;
             produced++;
             printf(GREEN "Produced Odd: %d" RESET "\n", produced);
+        }
 
         pthread_mutex_unlock(&buffer_lock);
         sem_post(&odd_sem);
@@ -75,14 +86,18 @@ void produce_even()
     int produced = 0;
     while (produced < 100)
     {
-        sem_wait(&even_sem);
-        pthread_mutex_lock(&buffer_lock);
+        sem_wait(&even_sem);                // Allows odd producer/consumer to work independently
+        pthread_mutex_lock(&buffer_lock);   // Mutex to control buffer pointers
 
-        // If buffer not full 
-            // write to buffer
+        // If there's buffer space, add to the end of it
+        if (items_in_buffer < BUFFER_SIZE)
+        {
+            addToEnd(produced*2, &buffer_head, &buffer_tail);
             evens_in_buffer++;
+            items_in_buffer++;
             produced++;
             printf(YELLOW "Produced Even: %d" RESET "\n", produced);
+        }
 
         pthread_mutex_unlock(&buffer_lock);
         sem_post(&even_sem);
@@ -112,11 +127,23 @@ void consume_odd()
         {
             pthread_mutex_lock(&buffer_lock);
 
-            // If buffer not full 
-                // write to buffer
-                odds_in_buffer--;
-                consumed++;
-                printf(BLUE "Consumed Odd: %d" RESET "\n", consumed);
+            // Search buffer for odd value
+            int list_size = getSize(&buffer_head, &buffer_tail);
+            int buffer_val;
+            for (int i = 0; i < list_size; i++)
+            {
+                // Check if index has an odd value. If so, remove it from list, break loop.
+                if (at(i+1, &buffer_val, &buffer_head, &buffer_tail) == 1 && (buffer_val % 2 != 0))
+                {
+                    removeSlot(i+1, &buffer_head, &buffer_tail);
+                    break;
+                }
+            }
+
+            odds_in_buffer--;
+            items_in_buffer--;
+            consumed++;
+            printf(BLUE "Consumed Odd: %d" RESET "\n", buffer_val);
 
             pthread_mutex_unlock(&buffer_lock);
         }
@@ -148,11 +175,23 @@ void consume_even()
         {
             pthread_mutex_lock(&buffer_lock);
 
-            // If buffer not full 
-                // write to buffer
-                evens_in_buffer--;
-                consumed++;
-                printf(MAGENTA "Consumed Even: %d" RESET "\n", consumed);
+            // Search buffer for even value
+            int list_size = getSize(&buffer_head, &buffer_tail);
+            int buffer_val;
+            for (int i = 0; i < list_size; i++)
+            {
+                // Check if index has an even value. If so, remove it from list, break loop.
+                if (at(i+1, &buffer_val, &buffer_head, &buffer_tail) == 1 && (buffer_val % 2 == 0))
+                {
+                    removeSlot(i+1, &buffer_head, &buffer_tail);
+                    break;
+                }
+            }
+
+            evens_in_buffer--;
+            items_in_buffer--;
+            consumed++;
+            printf(MAGENTA "Consumed Even: %d" RESET "\n", buffer_val);
 
             pthread_mutex_unlock(&buffer_lock);
         }
@@ -215,5 +254,6 @@ exit:
     pthread_mutex_destroy(&buffer_lock);
     sem_destroy(&even_sem);
     sem_destroy(&odd_sem);
+    destroyList(&buffer_head, &buffer_tail);
     return 0;
 }

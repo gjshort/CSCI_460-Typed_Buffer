@@ -17,3 +17,15 @@ This gives you **three distinct wait conditions** over one shared buffer:
 Keeping these three conditions distinct — so that a thread blocked on one of them resumes only when *that* condition holds — is the point of the assignment. A single "an item exists" condition cannot tell a consumer waiting for an odd item apart from one waiting for an even item; working out how to separate the three conditions (with whatever primitives you choose) is the core of the work.
 
 The container itself is unimportant. Use any structure you like (array, ring buffer, `std::deque`, `std::vector`) as long as **all locking is your own**. Ordering within the buffer does not matter; you may remove any item of the requested type. Do **not** spend effort on a fancy data structure — spend it on the synchronization.
+
+
+## Build instructions
+
+### Automatic with default seed (42)
+run `./run_program.sh`
+
+### Manual
+Run `make` to compile.
+Run `./buffer_sim` to run the code with default `seed = 42`
+
+To use a different seed, run `./buffer_sim -s <seed>`

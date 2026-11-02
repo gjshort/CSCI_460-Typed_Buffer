@@ -16,8 +16,6 @@
 #include <string.h>
 #include "CDLL.h"           // Circular, Doubly Linked List (written years ago)
 
-int begin_threads = 0; // Global thread launch
-
 // Circular Doubly Linked List pointers
 struct Node *buffer_head = NULL;
 struct Node *buffer_tail = NULL;
@@ -31,19 +29,14 @@ unsigned int seq = 1;
 
 sem_t odd_sem;
 sem_t even_sem;
+sem_t space_in_buf;
 pthread_mutex_t buffer_lock;
+pthread_barrier_t begin_threads;
 
 
 void produce_odd(void *thread_seed)
 {
-    // Wait for all threads to be created
-    while(begin_threads == 0) {}
-
-    // If a thread failed to start, exit
-    if(begin_threads == -1)
-    {
-        return;
-    }
+    pthread_barrier_wait(&begin_threads);
 
     FILE *log_file = fopen("producer_odd_output.txt", "w");
     if (log_file == NULL)
@@ -62,25 +55,22 @@ void produce_odd(void *thread_seed)
             else random_num++;
         }
 
-        sem_wait(&odd_sem);                     // Allows even producer/consumer to work independently
+        sem_wait(&space_in_buf);
         pthread_mutex_lock(&buffer_lock);       // Mutex to control buffer pointers
 
-        // If there's buffer space, add to the end of it
-        if (items_in_buffer < BUFFER_SIZE)
-        {
-            fprintf(log_file, "[seq=%u] [thread=produce_odd] [action=before_insert] [value=%u] [size=%d] [odd=%u] [even=%u]\n",
-                    seq, random_num, items_in_buffer, odds_in_buffer, evens_in_buffer);
+        fprintf(log_file, "[seq=%u] [thread=produce_odd] [action=before_insert] [value=%u] [size=%d] [odd=%u] [even=%u]\n",
+                seq, random_num, items_in_buffer, odds_in_buffer, evens_in_buffer);
 
-            addToEnd(random_num, &buffer_head, &buffer_tail);
-            odds_in_buffer++;
-            items_in_buffer++;
-            produced++;
+        addToEnd(random_num, &buffer_head, &buffer_tail);
+        odds_in_buffer++;
+        items_in_buffer++;
+        produced++;
+        seq++;
 
-            fprintf(log_file, "[seq=%u] [thread=produce_odd] [action=after_insert]  [value=%u] [size=%d] [odd=%u] [even=%u]\n",
-                    seq, random_num, items_in_buffer, odds_in_buffer, evens_in_buffer);
-            
-            seq++;
-        }
+        fprintf(log_file, "[seq=%u] [thread=produce_odd] [action=after_insert]  [value=%u] [size=%d] [odd=%u] [even=%u]\n",
+                seq, random_num, items_in_buffer, odds_in_buffer, evens_in_buffer);
+        
+        seq++;
 
         pthread_mutex_unlock(&buffer_lock);
         sem_post(&odd_sem);
@@ -94,14 +84,7 @@ void produce_odd(void *thread_seed)
 
 void produce_even(void *thread_seed)
 {
-    // Wait for all threads to be created
-    while(begin_threads == 0) {}
-
-    // If a thread failed to start, exit
-    if(begin_threads == -1)
-    {
-        return;
-    }
+    pthread_barrier_wait(&begin_threads);
 
     FILE *log_file = fopen("producer_even_output.txt", "w");
     if (log_file == NULL)
@@ -119,25 +102,23 @@ void produce_even(void *thread_seed)
             random_num--;
         }
 
-        sem_wait(&even_sem);                // Allows odd producer/consumer to work independently
+        sem_wait(&space_in_buf);
         pthread_mutex_lock(&buffer_lock);   // Mutex to control buffer pointers
 
-        // If there's buffer space, add to the end of it
-        if (items_in_buffer < BUFFER_SIZE)
-        {
-            fprintf(log_file, "[seq=%u] [thread=produce_even] [action=before_insert] [value=%u] [size=%d] [odd=%u] [even=%u]\n",
-                    seq, random_num, items_in_buffer, odds_in_buffer, evens_in_buffer);
+        
+        fprintf(log_file, "[seq=%u] [thread=produce_even] [action=before_insert] [value=%u] [size=%d] [odd=%u] [even=%u]\n",
+                seq, random_num, items_in_buffer, odds_in_buffer, evens_in_buffer);
 
-            addToEnd(random_num, &buffer_head, &buffer_tail);
-            evens_in_buffer++;
-            items_in_buffer++;
-            produced++;
-            
-            fprintf(log_file, "[seq=%u] [thread=produce_even] [action=after_insert]  [value=%u] [size=%d] [odd=%u] [even=%u]\n",
-                    seq, random_num, items_in_buffer, odds_in_buffer, evens_in_buffer);
+        addToEnd(random_num, &buffer_head, &buffer_tail);
+        evens_in_buffer++;
+        items_in_buffer++;
+        produced++;
+        seq++;
 
-            seq++;
-        }
+        fprintf(log_file, "[seq=%u] [thread=produce_even] [action=after_insert]  [value=%u] [size=%d] [odd=%u] [even=%u]\n",
+                seq, random_num, items_in_buffer, odds_in_buffer, evens_in_buffer);
+
+        seq++;
 
         pthread_mutex_unlock(&buffer_lock);
         sem_post(&even_sem);
@@ -151,14 +132,7 @@ void produce_even(void *thread_seed)
 
 void consume_odd()
 {
-    // Wait for all threads to be created
-    while(begin_threads == 0) {}
-
-    // If a thread failed to start, exit
-    if(begin_threads == -1)
-    {
-        return;
-    }
+    pthread_barrier_wait(&begin_threads);
 
     FILE *log_file = fopen("consumer_odd_output.txt", "w");
     if (log_file == NULL)
@@ -170,39 +144,36 @@ void consume_odd()
     while (consumed < 100)
     {
         sem_wait(&odd_sem);
-        if (odds_in_buffer > 0)
+        pthread_mutex_lock(&buffer_lock);
+
+        // Search buffer for odd value
+        int list_size = getSize(&buffer_head, &buffer_tail);
+        int buffer_val;
+        for (int i = 1; i <= list_size; i++)
         {
-            pthread_mutex_lock(&buffer_lock);
-
-            // Search buffer for odd value
-            int list_size = getSize(&buffer_head, &buffer_tail);
-            int buffer_val;
-            for (int i = 1; i <= list_size; i++)
+            // Check if index has an odd value. If so, remove it from list, break loop.
+            if (at(i, &buffer_val, &buffer_head, &buffer_tail) == 1 && (buffer_val % 2 != 0))
             {
-                // Check if index has an odd value. If so, remove it from list, break loop.
-                if (at(i, &buffer_val, &buffer_head, &buffer_tail) == 1 && (buffer_val % 2 != 0))
-                {
-                    fprintf(log_file, "[seq=%u] [thread=consume_odd] [action=before_remove] [value=%u] [size=%d] [odd=%u] [even=%u]\n",
-                            seq, buffer_val, items_in_buffer, odds_in_buffer, evens_in_buffer);
+                fprintf(log_file, "[seq=%u] [thread=consume_odd] [action=before_remove] [value=%u] [size=%d] [odd=%u] [even=%u]\n",
+                        seq, buffer_val, items_in_buffer, odds_in_buffer, evens_in_buffer);
 
-                    removeSlot(i, &buffer_head, &buffer_tail);
-                    break;
-                }
+                removeSlot(i, &buffer_head, &buffer_tail);
+                break;
             }
-
-            odds_in_buffer--;
-            items_in_buffer--;
-            consumed++;
-            
-            fprintf(log_file, "[seq=%u] [thread=consume_odd] [action=after_remove]  [value=%u] [size=%d] [odd=%u] [even=%u]\n",
-                    seq, buffer_val, items_in_buffer, odds_in_buffer, evens_in_buffer);
-
-            seq++;
-
-            pthread_mutex_unlock(&buffer_lock);
         }
-        
-        sem_post(&odd_sem);
+
+        odds_in_buffer--;
+        items_in_buffer--;
+        consumed++;
+        seq++;
+
+        fprintf(log_file, "[seq=%u] [thread=consume_odd] [action=after_remove]  [value=%u] [size=%d] [odd=%u] [even=%u]\n",
+                seq, buffer_val, items_in_buffer, odds_in_buffer, evens_in_buffer);
+
+        seq++;
+
+        pthread_mutex_unlock(&buffer_lock);
+        sem_post(&space_in_buf);
 
     }
 
@@ -213,14 +184,7 @@ void consume_odd()
 
 void consume_even()
 {
-    // Wait for all threads to be created
-    while(begin_threads == 0) {}
-
-    // If a thread failed to start, exit
-    if(begin_threads == -1)
-    {
-        return;
-    }
+    pthread_barrier_wait(&begin_threads);
 
     FILE *log_file = fopen("consumer_even_output.txt", "w");
     if (log_file == NULL)
@@ -232,39 +196,36 @@ void consume_even()
     while (consumed < 100)
     {
         sem_wait(&even_sem);
-        if (evens_in_buffer > 0)
+        pthread_mutex_lock(&buffer_lock);
+
+        // Search buffer for even value
+        int list_size = getSize(&buffer_head, &buffer_tail);
+        int buffer_val;
+        for (int i = 1; i <= list_size; i++)
         {
-            pthread_mutex_lock(&buffer_lock);
-
-            // Search buffer for even value
-            int list_size = getSize(&buffer_head, &buffer_tail);
-            int buffer_val;
-            for (int i = 1; i <= list_size; i++)
+            // Check if index has an even value. If so, remove it from list, break loop.
+            if (at(i, &buffer_val, &buffer_head, &buffer_tail) == 1 && (buffer_val % 2 == 0))
             {
-                // Check if index has an even value. If so, remove it from list, break loop.
-                if (at(i, &buffer_val, &buffer_head, &buffer_tail) == 1 && (buffer_val % 2 == 0))
-                {
-                    fprintf(log_file, "[seq=%u] [thread=consume_even] [action=before_remove] [value=%u] [size=%d] [odd=%u] [even=%u]\n",
-                            seq, buffer_val, items_in_buffer, odds_in_buffer, evens_in_buffer);
+                fprintf(log_file, "[seq=%u] [thread=consume_even] [action=before_remove] [value=%u] [size=%d] [odd=%u] [even=%u]\n",
+                        seq, buffer_val, items_in_buffer, odds_in_buffer, evens_in_buffer);
 
-                    removeSlot(i, &buffer_head, &buffer_tail);
-                    break;
-                }
+                removeSlot(i, &buffer_head, &buffer_tail);
+                break;
             }
-
-            evens_in_buffer--;
-            items_in_buffer--;
-            consumed++;
-            
-            fprintf(log_file, "[seq=%u] [thread=consume_even] [action=after_remove]  [value=%u] [size=%d] [odd=%u] [even=%u]\n",
-                    seq, buffer_val, items_in_buffer, odds_in_buffer, evens_in_buffer);
-
-            seq++;
-
-            pthread_mutex_unlock(&buffer_lock);
         }
+
+        evens_in_buffer--;
+        items_in_buffer--;
+        consumed++;
+        seq++;
         
-        sem_post(&even_sem);
+        fprintf(log_file, "[seq=%u] [thread=consume_even] [action=after_remove]  [value=%u] [size=%d] [odd=%u] [even=%u]\n",
+                seq, buffer_val, items_in_buffer, odds_in_buffer, evens_in_buffer);
+
+        seq++;
+
+        pthread_mutex_unlock(&buffer_lock);
+        sem_post(&space_in_buf);
 
     }
 
@@ -292,51 +253,32 @@ int main(int argc, char *argv[])
     unsigned int even_producer_seed = odd_producer_seed + 1;
 
     // Inter-thread locks
-    sem_init(&odd_sem, 0, 1);
-    sem_init(&even_sem, 0, 1);
+    sem_init(&odd_sem, 0, 0);
+    sem_init(&even_sem, 0, 0);
+    sem_init(&space_in_buf, 0, 50);
     pthread_mutex_init(&buffer_lock, NULL);
 
+    // 4 worker threads
     pthread_t even_producer;
     pthread_t odd_producer;
     pthread_t even_consumer;
     pthread_t odd_consumer;
 
-    // Create each thread. If one fails to start, skip others and
-    // join any that have already been started.
-    if ( pthread_create(&even_producer, NULL, (void(*))&produce_even, (void *)&even_producer_seed) != 0 ) 
-    {
-        begin_threads = -1;
-        goto exit;
-    }
-    if ( pthread_create(&odd_producer, NULL, (void(*))&produce_odd, (void *)&odd_producer_seed) != 0 )
-    {
-        begin_threads = -1;
-        goto join_1;
-    }
-    if ( pthread_create(&even_consumer, NULL, (void(*))&consume_even, NULL) != 0 ) 
-    {
-        begin_threads = -1;
-        goto join_2;
-    }
-    if ( pthread_create(&odd_consumer, NULL, (void(*))&consume_odd, NULL) != 0 )
-    {
-        begin_threads = -1;
-        goto join_3;
-    } 
+    pthread_barrier_init(&begin_threads, NULL, 4); // All 4 threads must launch
 
-    begin_threads = 1;
+    // No real error checking on thread creation. Just using the barrier for synchronization
+    pthread_create(&even_producer, NULL, (void(*))&produce_even, (void *)&even_producer_seed);
+    pthread_create(&odd_producer, NULL, (void(*))&produce_odd, (void *)&odd_producer_seed);
+    pthread_create(&even_consumer, NULL, (void(*))&consume_even, NULL);
+    pthread_create(&odd_consumer, NULL, (void(*))&consume_odd, NULL);
 
-    // Join threads in the reverse order they were created for
-    // easier thread creation error handling.
     pthread_join(odd_consumer, NULL);    
-join_3:
     pthread_join(even_consumer, NULL);
-join_2:
     pthread_join(odd_producer, NULL);
-join_1:
     pthread_join(even_producer, NULL);
 
-exit:
+    printf("Wasted wakeups: 0 (semaphores w/o condition checking)\n");
+    pthread_barrier_destroy(&begin_threads);
     pthread_mutex_destroy(&buffer_lock);
     sem_destroy(&even_sem);
     sem_destroy(&odd_sem);

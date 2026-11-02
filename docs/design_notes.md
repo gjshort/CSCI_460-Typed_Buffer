@@ -1,51 +1,34 @@
 # Design Notes
 
-![Diagram](./system_diagram.png)
+I used semaphores for each thread to wake up on. I used a mutex to restrict buffer access to a single thread at a time.
 
-## Shared Information
+## Shared Variables
+* `space_in_buf` semaphore: consumers post this after removing an item from the buffer
+* `odd_sem` semaphore: odd producer posts this after adding to the buffer
+* `even_sem` semaphore: even producer posts this after adding to the buffer
+* `buffer_lock` mutex: single entry point for all threads to access the shared buffer after "acquiring" their respective semaphore
 
-* `<data_structure> shared_buffer`
-    * Each item contains two fields: integer in [1:100] and a bool for (odd = 1) or (even = 0)
-* `int odds_in_buffer`
-* `int evens_in_buffer`
+* Wakeups
+    * Odd Producer: waits on `space_in_buf` (posted by consumers)
+    * Even Producer: waits on `space_in_buf` (posted by consumers)
+    * Odd Consumer: waits on `odd_sem` (posted by odd producer)
+    * Even Consumer: waits on `even_sem` (posted by even producer)
+* Buffer
+    * All threads wait to gain access to the `buffer_lock` mutex after being woken up
 
-*Each thread only needs to acquire its respective parity counter*
-
-## Acqusition & Release Order
-
-1. Acquire Parity counter (only contested by respective producer)
-2. Acquire Buffer
-
-3. Release Buffer
-4. Release Parity counter
-
-## Program Flow
-### Consumers
-
-int consumed = 0;
-While (consumed < 100)
-* Acquire respective parity counter
-* Check if it's greater than 0
-    * If not, release parity variable. GOTO end of loop
-* Acquire the buffer
-* Once buffer is acquired, try to acquire buffer_count
-* Once acquired:
-    * Take one item
-    * Decrement parity counter
-* Release
-    * Release buffer
-    * Release parity counter
+## Eliminating Blocking
 
 ### Producers
+After being woken up by a consumer posting to `space_in_buf`, the producer waits to acquire `buffer_lock`. If a consumer has the buffer now, another item will just be taken. If the other producer has the buffer, then the count of `space_in_buf` was already greater than 1- it has a starting count of 50 (buffer size).
 
-int produced = 0;
-while (produced < 100)
-* Acquire respective parity counter
-* Acquire buffer
-* Check if it has less than 50 items in it
-    * If not, GOTO releases
-* Write to buffer
-* Increment parity counter
-* Release
-    * Release buffer
-    * Release parity counter
+### Consumers
+After being woken up by a producer posting to `odd_sem` or `even_sem`, the consumer thread waits to acquire the buffer. When it does, the producer will have put something in there for the consumer to take (that's who posted to the semaphore).
+
+## Targeting
+Each thread is only woken up when its own semaphore gets posted to (or is already > 0). So there are 0 wasted wakeups.
+
+## Termination
+The consumers and producers sit in while loops that only end after 100 items have been produced/consumed. Producers immediately terminate after their 100th item and consumers terminate after taking their 100th item. So unless a thread crashes, all threads complete.
+
+## Reproducibility
+I use `rand_r()`, so any given seed will create the same string of numbers in order. However, the exact order that the numbers are placed in and taken from the buffer across all 4 threads is random and based on how the OS schedules the threads for every program execution.
